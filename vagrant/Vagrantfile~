@@ -1,0 +1,241 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+IRODSVER="4.1.2"
+
+Vagrant.configure(2) do |config|
+  config.vm.define "icat1" do |icat1|
+    icat1.vm.box = "puppetlabs/centos-6.6-64-nocm"
+    icat1.vm.box_url = 'puppetlabs/centos-6.6-64-nocm'
+    icat1.vm.network "private_network", ip: "192.168.0.5"
+    icat1.vm.network "forwarded_port", guest: 1247, host: 1247, id: "icat1", auto_correct: true
+    icat1.vm.provider "virtualbox" do |v|
+      v.memory = 128
+      v.cpus = 1
+    end
+    icat1.vm.provider "virtualbox" do |vb|
+      if !File.exist?("storage1.vdi")
+        vb.customize ["createhd", "--filename", "storage1.vdi", "--size", 128, "--variant", "Fixed"]
+        vb.customize ["modifyhd", "storage1.vdi", "--type", "shareable"]
+      end
+      vb.customize ["storageattach", :id, "--storagectl", "IDE Controller", "--port", 0, "--device", 1, "--type", "hdd", "--medium", "storage1.vdi"]
+    end
+  end
+  config.vm.define "client1" do |client1|
+    client1.vm.box = "puppetlabs/centos-6.6-64-nocm"
+    client1.vm.box_url = 'puppetlabs/centos-6.6-64-nocm'
+    client1.vm.network "private_network", ip: "192.168.0.20"
+    client1.vm.provider "virtualbox" do |v|
+      v.memory = 128
+      v.cpus = 1
+    end
+  end
+  # disable IPv6 on Linux
+  $linux_disable_ipv6 = <<SCRIPT
+sysctl -w net.ipv6.conf.default.disable_ipv6=1
+sysctl -w net.ipv6.conf.all.disable_ipv6=1
+sysctl -w net.ipv6.conf.lo.disable_ipv6=1
+SCRIPT
+  # setenforce 0
+  $setenforce_0 = <<SCRIPT
+if test `getenforce` = 'Enforcing'; then setenforce 0; fi
+#sed -Ei 's/^SELINUX=.*/SELINUX=Permissive/' /etc/selinux/config
+SCRIPT
+  # stop iptables
+  $service_iptables_stop = <<SCRIPT
+service iptables stop
+SCRIPT
+  # common settings on all machines
+  $etc_hosts = <<SCRIPT
+cat <<END >> /etc/hosts
+192.168.0.5 icat1
+192.168.0.20 client1
+END
+SCRIPT
+  # fstab
+  $etc_fstab = <<SCRIPT
+dev=$1
+mnt=$2
+options=$3
+echo ${dev}, ${mnt}, ${options}
+mkdir -p ${mnt}
+cat <<END >> /etc/fstab
+${dev}        ${mnt}        ext4  ${options}     0       0
+END
+SCRIPT
+  # epel
+  $epel6 = <<SCRIPT
+yum -y install http://dl.fedoraproject.org/pub/epel/6/x86_64/epel-release-6-8.noarch.rpm
+SCRIPT
+  # setup postgres
+  $setup_postgres = <<SCRIPT
+sed -i "s|#listen_addresses =.*|listen_addresses = '192.168.0.5'|" /var/lib/pgsql/data/postgresql.conf
+DBUSER=`python -c "import json; d=json.load(open('/etc/irods/database_config.json', 'r')); print d['db_username']"`
+DBPASS=`python -c "import json; d=json.load(open('/etc/irods/database_config.json', 'r')); print d['db_password']"`
+service postgresql start
+sleep 5  # give postgresql some time to start ...
+# watch out for the double quotes in postgresql! http://blog.lerner.co.il/quoting-postgresql/
+su - postgres -c "psql -d postgres -U postgres -c 'CREATE DATABASE \\\"ICAT\\\";'"
+su - postgres -c "psql -d postgres -U postgres -c \\\"CREATE USER $DBUSER WITH PASSWORD '$DBPASS';\\\""
+su - postgres -c "psql -d postgres -U postgres -c 'GRANT ALL PRIVILEGES ON DATABASE \\\"ICAT\\\" TO $DBUSER'"
+#sed -i '1ihost all irods 127.0.0.1/32 md5' /var/lib/pgsql/data/pg_hba.conf
+sed -i '1ihost all irods 192.168.0.0/24 md5' /var/lib/pgsql/data/pg_hba.conf
+service postgresql reload
+SCRIPT
+  # icat unattended expect
+  $root_setup_irods = <<SCRIPT
+cat <<'END' >> /root/setup_irods
+#!/usr/bin/expect --
+spawn /var/lib/irods/packaging/setup_irods.sh
+
+expect "iRODS service account name \\\[irods\\\]:"
+send "\r"
+
+expect "iRODS service group name \\\[irods\\\]:"
+send "\r"
+
+expect "iRODS server's zone name \\\[tempZone\\\]:"
+send "\r"
+
+expect "iRODS server's port \\\[1247\\\]:"
+send "\r"
+
+expect "iRODS port range (begin) \\\[20000\\\]:"
+send "\r"
+
+expect "iRODS port range (end) \\\[20199\\\]:"
+send "\r"
+
+expect "iRODS Vault directory \\\[/var/lib/irods/iRODS/Vault\\\]:"
+send "\r"
+
+expect "iRODS server's zone_key \\\[TEMPORARY_zone_key\\\]:"
+send "\r"
+
+expect "iRODS server's negotiation_key \\\[TEMPORARY_32byte_negotiation_key\\\]:"
+send "\r"
+
+expect "Control Plane port \\\[1248\\\]:"
+send "\r"
+
+expect "Control Plane key \\\[TEMPORARY__32byte_ctrl_plane_key\\\]:"
+send "\r"
+
+expect "Schema Validation Base URI (or 'off') \\\[https://schemas.irods.org/configuration\\\]:"
+send "\r"
+
+expect "iRODS server's administrator username \\\[rods\\\]:"
+send "\r"
+
+expect "iRODS server's administrator password:"
+send "rods\r"
+
+expect "Administrator Password:     Not Shown.*Please confirm these settings \\\[yes\\\]:"
+send "\r"
+
+expect "Database server's hostname or IP address:"
+send "192.168.0.5\r"
+
+expect "Database server's port \\\[5432\\\]:"
+send "\r"
+
+expect "Database name \\\[ICAT\\\]:"
+send "\r"
+
+expect "Database username \\\[irods\\\]:"
+send "\r"
+
+expect "Database password:"
+send "testpassword\r"
+
+expect "Database Password: Not Shown.*Please confirm these settings \\\[yes\\\]:"
+send "\r"
+
+set timeout -1
+expect "Abort."
+
+puts "Ended expect script."
+END
+SCRIPT
+  $irods_environment = <<SCRIPT
+IRODS_HOST=$1
+IRODS_PORT=$2
+USERNAME=$3
+mkdir -p ~${USERNAME}/.irods
+cat <<END >> ~${USERNAME}/.irods/irods_environment.json
+{
+"irods_host": "${IRODS_HOST}",
+"irods_port": ${IRODS_PORT},
+"irods_default_resource": "demoResc",
+"irods_home": "/tempZone/home/${USERNAME}",
+"irods_cwd": "/tempZone/home/${USERNAME}",
+"irods_user_name": "${USERNAME}",
+"irods_zone_name": "tempZone",
+"irods_client_server_negotiation": "request_server_negotiation",
+"irods_client_server_policy": "CS_NEG_REFUSE",
+"irods_encryption_key_size": 32,
+"irods_encryption_salt_size": 8,
+"irods_encryption_num_hash_rounds": 16,
+"irods_encryption_algorithm": "AES-256-CBC",
+"irods_default_hash_scheme": "SHA256",
+"irods_match_hash_policy": "compatible"
+}
+END
+SCRIPT
+  config.vm.define "icat1" do |icat1|
+    icat1.vm.provision :shell, :inline => "hostname icat1", run: "always"
+    icat1.vm.provision :shell, :inline => $etc_hosts
+    icat1.vm.provision :shell, :inline => $setenforce_0, run: "always"
+    icat1.vm.provision :shell, :inline => $linux_disable_ipv6, run: "always"
+    icat1.vm.provision :shell, :inline => $service_iptables_stop, run: "always"
+    icat1.vm.provision :shell, :inline => "mkdir -p /mnt/storage1"
+    icat1.vm.provision :shell, :inline => "yum -y install e2fsprogs"
+    icat1.vm.provision :shell, :inline => "mkfs.ext4 -F /dev/sdb"
+    icat1.vm.provision "shell" do |s|
+      s.inline = $etc_fstab
+      s.args   = "/dev/sdb /mnt/storage1 defaults"
+    end
+    icat1.vm.provision :shell, :inline => "mount /mnt/storage1"
+    icat1.vm.provision :shell, :inline => $epel6
+    icat1.vm.provision :shell, :inline => "yum -y install expect python"
+    icat1.vm.provision :shell, :inline => "yum -y install postgresql-server postgresql postgresql-contrib"
+    icat1.vm.provision :shell, :inline => "chkconfig postgresql on"
+    icat1.vm.provision :shell, :inline => "service postgresql initdb"
+    icat1.vm.provision :shell, :inline => "yum -y install ftp://ftp.renci.org/pub/irods/releases/" + IRODSVER + "/centos6/irods-icat-" + IRODSVER + "-centos6-x86_64.rpm"
+    icat1.vm.provision :shell, :inline => "yum -y install ftp://ftp.renci.org/pub/irods/releases/" + IRODSVER + "/centos6/irods-database-plugin-postgres-1.5-centos6-x86_64.rpm"
+    icat1.vm.provision :shell, :inline => $setup_postgres
+    icat1.vm.provision :shell, :inline => 'su - postgres -c "psql -d postgres -U postgres -c \"\du\""'
+    icat1.vm.provision :shell, :inline => 'su - postgres -c "psql -d postgres -U postgres -c \"\l\""'
+    icat1.vm.provision :shell, :inline => 'su - postgres -c "psql -x -c \"select * from pg_user where usename=\'irods\'\""'
+    icat1.vm.provision :shell, :inline => $root_setup_irods
+    icat1.vm.provision :shell, :inline => "expect /root/setup_irods"
+    #icat1.vm.provision :shell, :inline => 'sudo su - irods -c "psql -d ICAT -c \"\l\""'
+    #icat1.vm.provision :shell, :inline => 'sudo su - irods -c "ienv"'
+    #icat1.vm.provision :shell, :inline => 'sudo su - irods -c "ils"'
+    #icat1.vm.provision :shell, :inline => 'sudo su - irods -c "iadmin lz"'
+    #icat1.vm.provision :shell, :inline => 'sudo su - irods -c "iadmin mkresc mnt unixfilesystem 127.0.0.1:/mnt"'
+    #icat1.vm.provision :shell, :inline => 'sudo su - irods -c "iadmin lr"'
+    #icat1.vm.provision :shell, :inline => 'sudo su - irods -c "iadmin mkuser test rodsuser"'
+    #icat1.vm.provision :shell, :inline => 'sudo su - irods -c "iadmin lu"'
+  end
+  config.vm.define "client1" do |client1|
+    client1.vm.provision :shell, :inline => "hostname client1", run: "always"
+    client1.vm.provision :shell, :inline => $etc_hosts
+    client1.vm.provision :shell, :inline => $setenforce_0, run: "always"
+    client1.vm.provision :shell, :inline => $linux_disable_ipv6, run: "always"
+    client1.vm.provision :shell, :inline => $service_iptables_stop, run: "always"
+    client1.vm.provision :shell, :inline => "yum -y install ftp://ftp.renci.org/pub/irods/releases/" + IRODSVER + "/centos6/irods-icommands-" + IRODSVER + "-centos6-x86_64.rpm"
+    client1.vm.provision "shell" do |s|
+      s.inline = $irods_environment
+      s.args   = "client1 1247 vagrant"
+    end
+    #client1.vm.provision :shell, :inline => 'sudo su - irods -c "psql -d ICAT -c \"\l\""'
+    #client1.vm.provision :shell, :inline => 'sudo su - irods -c "ienv"'
+    #client1.vm.provision :shell, :inline => 'sudo su - irods -c "ils"'
+    #client1.vm.provision :shell, :inline => 'sudo su - irods -c "iadmin lz"'
+    #client1.vm.provision :shell, :inline => 'sudo su - irods -c "iadmin mkresc mnt unixfilesystem 127.0.0.1:/mnt"'
+    #client1.vm.provision :shell, :inline => 'sudo su - irods -c "iadmin lr"'
+    #client1.vm.provision :shell, :inline => 'sudo su - irods -c "iadmin mkuser test rodsuser"'
+    #client1.vm.provision :shell, :inline => 'sudo su - irods -c "iadmin lu"'
+  end
+end
