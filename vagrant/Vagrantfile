@@ -1,7 +1,8 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
 
-IRODSVER="4.1.3"
+IRODSVER="4.1.8"
+POSTGRESPLUGINVER="1.8"
 
 Vagrant.configure(2) do |config|
   config.vm.define "icat1" do |icat1|
@@ -191,7 +192,7 @@ SCRIPT
     icat1.vm.provision :shell, :inline => "mkfs.ext4 -F /dev/sdb"
     icat1.vm.provision "shell" do |s|
       s.inline = $etc_fstab
-      s.args   = "/dev/sdb /mnt/storage1 defaults"
+      s.args   = ["/dev/sdb", "/mnt/storage1", "defaults"]
     end
     icat1.vm.provision :shell, :inline => "mount /mnt/storage1"
     icat1.vm.provision :shell, :inline => $epel6
@@ -200,7 +201,7 @@ SCRIPT
     icat1.vm.provision :shell, :inline => "chkconfig postgresql on"
     icat1.vm.provision :shell, :inline => "service postgresql initdb"
     icat1.vm.provision :shell, :inline => "yum -y install ftp://ftp.renci.org/pub/irods/releases/" + IRODSVER + "/centos6/irods-icat-" + IRODSVER + "-centos6-x86_64.rpm"
-    icat1.vm.provision :shell, :inline => "yum -y install ftp://ftp.renci.org/pub/irods/releases/" + IRODSVER + "/centos6/irods-database-plugin-postgres-1.5-centos6-x86_64.rpm"
+    icat1.vm.provision :shell, :inline => "yum -y install ftp://ftp.renci.org/pub/irods/releases/" + IRODSVER + "/centos6/irods-database-plugin-postgres-" + POSTGRESPLUGINVER + "-centos6-x86_64.rpm"
     icat1.vm.provision :shell, :inline => $setup_postgres
     icat1.vm.provision :shell, :inline => 'su - postgres -c "psql -d postgres -U postgres -c \"\du\""'
     icat1.vm.provision :shell, :inline => 'su - postgres -c "psql -d postgres -U postgres -c \"\l\""'
@@ -226,7 +227,7 @@ SCRIPT
     client1.vm.provision :shell, :inline => "yum -y install ftp://ftp.renci.org/pub/irods/releases/" + IRODSVER + "/centos6/irods-icommands-" + IRODSVER + "-centos6-x86_64.rpm"
     client1.vm.provision "shell" do |s|
       s.inline = $irods_environment
-      s.args   = "icat1 1247 vagrant"
+      s.args   = ["icat1", "1247", "vagrant"]
     end
     client1.vm.provision :shell, :inline => 'sudo su - vagrant -c "ienv"'
   end
